@@ -1,5 +1,6 @@
 import type { DB } from './db';
 import { createProject, importVersion, addAnnotation } from './service';
+import { registerReviewers, assignFragments } from './assignment';
 
 const V1 = `第一条 为规范平台数据处理活动，保障数据安全，根据《中华人民共和国数据安全法》等法律法规，制定本办法。
 
@@ -91,6 +92,19 @@ export function seedDemo(db: DB): DemoResult {
   const r3 = importVersion(db, projectId, 'v3.0 正式发布稿', V3);
   if (r3.status !== 'ok' || r3.comparisonId == null) {
     throw new Error('示例数据异常：v3 比对未生成');
+  }
+
+  // 预置审阅分派：登记名单并把本轮片段轮流分派给审阅人，便于直接体验认领 / 完成 / 进度
+  const reg = registerReviewers(db, r3.comparisonId, ['王法务', '李合规', '张审计'], '项目负责人');
+  if (reg.status === 'ok' && reg.added.length > 0) {
+    const frags = db
+      .prepare('SELECT id FROM fragments WHERE comparison_id = ? ORDER BY ord')
+      .all(r3.comparisonId) as Array<{ id: number }>;
+    const items = frags.map((f, i) => ({
+      fragment_id: f.id,
+      reviewer_id: reg.added[i % reg.added.length].id,
+    }));
+    assignFragments(db, r3.comparisonId, items, '项目负责人');
   }
 
   return {

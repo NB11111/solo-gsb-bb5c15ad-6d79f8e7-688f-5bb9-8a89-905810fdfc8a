@@ -6,6 +6,7 @@ const STATUS_LABEL = { open: '待处理', resolved: '已解决', pending_review:
 const TYPE_LABEL = { added: '新增', removed: '删除', changed: '修改' };
 const DECISION_LABEL = { accepted: '接受变更', rejected: '拒绝变更', deferred: '暂缓' };
 const SOURCE_LABEL = { unchanged: '未变更', new: '采用新版', old: '恢复旧版' };
+const ASSIGN_LABEL = { assigned: '已分派', completed: '已完成' };
 
 const app = document.getElementById('app');
 
@@ -55,6 +56,16 @@ const lastAuthor = {
 const lastSealer = {
   get: () => localStorage.getItem('review-sealer') || '',
   set: (v) => localStorage.setItem('review-sealer', v),
+};
+
+const lastLead = {
+  get: () => localStorage.getItem('review-lead') || '',
+  set: (v) => localStorage.setItem('review-lead', v),
+};
+
+const lastReviewer = {
+  get: () => localStorage.getItem('review-reviewer') || '',
+  set: (v) => localStorage.setItem('review-reviewer', v),
 };
 
 /* ================= 视图：项目列表 ================= */
@@ -155,7 +166,9 @@ const cmp = {
   data: null,
   status: 'all',
   author: 'all',
+  assignee: 'all',
   onlyAnnotated: false,
+  assignPick: new Set(),
   resolution: null,
   showMigrationReport: false,
   migrationReport: null,
@@ -168,7 +181,9 @@ async function renderComparison(id) {
   if (cmp.id !== id) {
     cmp.status = 'all';
     cmp.author = 'all';
+    cmp.assignee = 'all';
     cmp.onlyAnnotated = false;
+    cmp.assignPick = new Set();
     cmp.showMigrationReport = false;
     cmp.migrationReport = null;
     cmp.remountFor = null;
@@ -177,6 +192,11 @@ async function renderComparison(id) {
   cmp.id = id;
   cmp.data = data;
   cmp.resolution = null; // 结论可能已变化，决议稿需重新生成
+  // 剔除已不再是「未分派」的勾选（可能已被他人分派 / 认领）
+  cmp.assignPick = new Set(
+    [...cmp.assignPick].filter((fid) =>
+      data.fragments.some((f) => f.id === fid && !f.assignment))
+  );
   if (cmp.showMigrationReport) {
     // 报告保持展开时随详情一起刷新（如刚完成一次重挂）
     cmp.migrationReport = await api('GET', `/api/comparisons/${id}/migration-report`);
@@ -284,6 +304,8 @@ function fragHtml(f) {
         <span class="badge ft-${f.type}">${TYPE_LABEL[f.type]}</span>
         <span class="dim">片段 #${f.ord}${pos ? ` · ${pos}` : ''} · ${f.annotations.length} 条批注</span>
         ${f.decision ? `<span class="badge dc-${f.decision}">${DECISION_LABEL[f.decision]}</span>` : '<span class="badge dc-none">未结论</span>'}
+        ${assignBadgeHtml(f)}
+        ${assignOpsHtml(f)}
       </div>
       ${f.old_text != null ? `<pre class="frag-text old">${esc(f.old_text)}</pre>` : ''}
       ${f.new_text != null ? `<pre class="frag-text new">${esc(f.new_text)}</pre>` : ''}
@@ -341,6 +363,112 @@ function sealPanelHtml(data) {
         </button>
       </div>
     </div>`;
+}
+
+/* ================= 审阅分派 ================= */
+
+/** 当前选择的审阅人（名单内），用于认领 / 完成 */
+function currentReviewer(data = cmp.data) {
+  const name = lastReviewer.get();
+  const hit = data.assignments.reviewers.find((p) => p.reviewer.name === name);
+  return hit ? hit.reviewer : null;
+}
+
+function assignmentPanelHtml(data) {
+  const sealed = !!data.comparison.sealed_at;
+  const s = data.assignments.summary;
+  const reviewers = data.assignments.reviewers;
+  const me = currentReviewer(data);
+  const pickCount = cmp.assignPick.size;
+  return `
+    <div class="assign-panel">
+      <div class="assign-head">
+        <h3>👥 审阅分派</h3>
+        <div class="assign-counts">
+          <span class="chip as-unassigned${s.unassigned > 0 ? ' hot' : ''}">未分派 ${s.unassigned}</span>
+          <span class="chip as-assigned">已分派 ${s.assigned}</span>
+          <span class="chip as-completed">已完成 ${s.completed}</span>
+        </div>
+      </div>
+      ${reviewers.length === 0
+        ? '<p class="empty">尚未登记审阅人名单。项目负责人登记名单后，即可按片段批量分派。</p>'
+        : `<div class="reviewer-list">${reviewers.map((p) => {
+            const pct = p.total > 0 ? Math.round((p.completed / p.total) * 100) : 0;
+            return `
+              <div class="reviewer-item">
+                <span class="reviewer-name">${esc(p.reviewer.name)}</span>
+                <span class="progress" title="完成 ${p.completed} / ${p.total}"><span class="progress-fill" style="width:${pct}%"></span></span>
+                <span class="dim">${p.completed}/${p.total} 完成${p.assigned > 0 ? ` · ${p.assigned} 进行中` : ''}</span>
+                ${!sealed && p.total === 0
+                  ? `<button class="btn small danger" data-action="remove-reviewer" data-id="${p.reviewer.id}" title="从名单移除（无分派时可移除）">✕</button>`
+                  : ''}
+              </div>`;
+          }).join('')}</div>`}
+      ${sealed ? '' : `
+      <form id="reviewer-form" class="assign-row">
+        <input name="names" maxlength="500" placeholder="登记审阅人：多个姓名用逗号 / 顿号分隔，如：王法务、李合规">
+        <button class="btn small primary" type="submit">登记名单</button>
+      </form>
+      <div class="assign-row">
+        <label>负责人
+          <input id="lead-name" maxlength="50" placeholder="分派 / 回收操作人" value="${esc(lastLead.get())}">
+        </label>
+        <label>当前审阅人
+          <select id="me-reviewer">
+            <option value="">（从名单选择）</option>
+            ${reviewers.map((p) =>
+              `<option value="${p.reviewer.id}" ${me && me.id === p.reviewer.id ? 'selected' : ''}>${esc(p.reviewer.name)}</option>`).join('')}
+          </select>
+        </label>
+        <span class="dim">「认领」以当前审阅人身份进行；认领冲突时以服务端当前负责人为准</span>
+      </div>
+      <div class="assign-row">
+        <label>批量分派给
+          <select id="batch-reviewer">
+            <option value="">（选择审阅人）</option>
+            ${reviewers.map((p) => `<option value="${p.reviewer.id}">${esc(p.reviewer.name)}</option>`).join('')}
+          </select>
+        </label>
+        <button class="btn small" data-action="pick-unassigned" ${s.unassigned === 0 ? 'disabled' : ''}>全选未分派</button>
+        <button class="btn small" data-action="clear-pick" ${pickCount === 0 ? 'disabled' : ''}>清空选择</button>
+        <button class="btn small primary" data-action="assign-batch" ${pickCount === 0 ? 'disabled' : ''}>分派所选（${pickCount}）</button>
+        <span class="dim">在未分派片段卡片上勾选「分派」后批量提交；已分派片段不会被覆盖</span>
+      </div>`}
+    </div>`;
+}
+
+/** 片段头部的分派状态徽标 */
+function assignBadgeHtml(f) {
+  const a = f.assignment;
+  if (!a) return '<span class="badge as-unassigned">未分派</span>';
+  const done = a.status === 'completed' && a.completed_by
+    ? ` · 完成人 ${esc(a.completed_by)}`
+    : '';
+  return `<span class="badge as-${a.status}" title="分派人：${esc(a.assigned_by)} · ${esc(a.assigned_at)}${done}">${ASSIGN_LABEL[a.status]} · ${esc(a.reviewer_name)}</span>`;
+}
+
+/** 片段头部的分派操作：勾选批量分派 / 认领 / 标记完成 / 回收 */
+function assignOpsHtml(f) {
+  if (cmp.data.comparison.sealed_at) return '';
+  const a = f.assignment;
+  if (!a) {
+    const me = currentReviewer();
+    return `
+      <span class="assign-ops">
+        <label class="assign-pick" title="勾选后可在分派面板批量分派">
+          <input type="checkbox" class="assign-check" data-id="${f.id}" ${cmp.assignPick.has(f.id) ? 'checked' : ''}> 分派
+        </label>
+        ${me ? `<button class="btn small" data-action="claim" data-id="${f.id}" title="以「${esc(me.name)}」身份认领该片段">认领</button>` : ''}
+      </span>`;
+  }
+  if (a.status === 'assigned') {
+    return `
+      <span class="assign-ops">
+        <button class="btn small" data-action="complete-assign" data-id="${a.id}" data-version="${a.version}" title="标记「${esc(a.reviewer_name)}」的分派为已完成">标记完成</button>
+        <button class="btn small danger" data-action="reclaim-assign" data-id="${a.id}" data-version="${a.version}" title="负责人回收未完成分派，回收后可再分派">回收</button>
+      </span>`;
+  }
+  return '';
 }
 
 /* ================= 决议稿 ================= */
@@ -525,8 +653,16 @@ function drawComparison() {
   const { comparison, fragments, unanchored, stats } = cmp.data;
   const authors = [...new Set(allAnnotations().map((a) => a.author))].sort();
   const filtering = cmp.status !== 'all' || cmp.author !== 'all';
+  const assignFiltering = cmp.assignee !== 'all';
 
   const shownFragments = fragments.filter((f) => {
+    if (assignFiltering) {
+      if (cmp.assignee === 'unassigned') {
+        if (f.assignment) return false;
+      } else if (!f.assignment || String(f.assignment.reviewer_id) !== cmp.assignee) {
+        return false;
+      }
+    }
     if (filtering) return visibleAnnotations(f.annotations).length > 0;
     if (cmp.onlyAnnotated) return f.annotations.length > 0;
     return true;
@@ -584,6 +720,8 @@ function drawComparison() {
         <span class="chip st-resolved">已解决 ${stats.annotations.resolved}</span>
       </div>
 
+      ${assignmentPanelHtml(cmp.data)}
+
       ${resolutionBarHtml(cmp.data)}
 
       ${migrationBarHtml()}
@@ -601,6 +739,14 @@ function drawComparison() {
             <option value="all">全部</option>
             ${authors.map((a) =>
               `<option value="${esc(a)}" ${cmp.author === a ? 'selected' : ''}>${esc(a)}</option>`).join('')}
+          </select>
+        </label>
+        <label>审阅人
+          <select id="filter-assignee">
+            <option value="all">全部</option>
+            <option value="unassigned" ${cmp.assignee === 'unassigned' ? 'selected' : ''}>未分派</option>
+            ${cmp.data.assignments.reviewers.map((p) =>
+              `<option value="${p.reviewer.id}" ${cmp.assignee === String(p.reviewer.id) ? 'selected' : ''}>${esc(p.reviewer.name)}（${p.completed}/${p.total}）</option>`).join('')}
           </select>
         </label>
         <label class="check">
@@ -675,6 +821,28 @@ document.addEventListener('submit', async (e) => {
       await api('POST', `/api/fragments/${form.dataset.fragment}/annotations`, { author, content });
       await renderComparison(cmp.id);
       toast('批注已添加');
+    } else if (form.id === 'reviewer-form') {
+      e.preventDefault();
+      const names = form.elements.names.value
+        .split(/[,，、;；\n]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (names.length === 0) {
+        toast('请填写审阅人姓名（多个用逗号分隔）', true);
+        return;
+      }
+      const leadInput = document.getElementById('lead-name');
+      const lead = leadInput ? leadInput.value.trim() : '';
+      if (lead) lastLead.set(lead);
+      const r = await api('POST', `/api/comparisons/${cmp.id}/reviewers`, {
+        names,
+        registered_by: lead || null,
+      });
+      toast(
+        `名单已登记：新增 ${r.added.length} 人` +
+          (r.existing.length ? `，${r.existing.length} 人已在名单中` : '')
+      );
+      await renderComparison(cmp.id);
     }
   } catch (err) {
     toast(err.message, true);
@@ -825,6 +993,108 @@ document.addEventListener('click', async (e) => {
       } finally {
         btn.disabled = false;
       }
+    } else if (action === 'remove-reviewer') {
+      if (!confirm('确定把该审阅人从名单移除？（名下无分派时才可移除）')) return;
+      await api('DELETE', `/api/reviewers/${btn.dataset.id}`);
+      toast('审阅人已移除');
+      await renderComparison(cmp.id);
+    } else if (action === 'pick-unassigned') {
+      for (const f of cmp.data.fragments) {
+        if (!f.assignment) cmp.assignPick.add(f.id);
+      }
+      drawComparison();
+    } else if (action === 'clear-pick') {
+      cmp.assignPick.clear();
+      drawComparison();
+    } else if (action === 'assign-batch') {
+      const reviewerSel = document.getElementById('batch-reviewer');
+      const reviewerId = reviewerSel ? reviewerSel.value : '';
+      if (!reviewerId) {
+        toast('请先选择要分派给的审阅人', true);
+        reviewerSel?.focus();
+        return;
+      }
+      const leadInput = document.getElementById('lead-name');
+      const lead = leadInput ? leadInput.value.trim() : '';
+      if (!lead) {
+        toast('请填写负责人姓名（分派操作人）', true);
+        leadInput?.focus();
+        return;
+      }
+      if (cmp.assignPick.size === 0) {
+        toast('请先在未分派片段上勾选「分派」', true);
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const r = await api('POST', `/api/comparisons/${cmp.id}/assignments`, {
+          assigned_by: lead,
+          assignments: [...cmp.assignPick].map((fid) => ({
+            fragment_id: fid,
+            reviewer_id: Number(reviewerId),
+          })),
+        });
+        lastLead.set(lead);
+        cmp.assignPick.clear();
+        toast(
+          `已分派 ${r.assigned.length} 个片段` +
+            (r.conflicts.length
+              ? `；${r.conflicts.length} 个片段已被「${r.conflicts[0].current.reviewer_name}」等负责，未覆盖`
+              : '')
+        );
+        await renderComparison(cmp.id);
+      } finally {
+        btn.disabled = false;
+      }
+    } else if (action === 'claim') {
+      const me = currentReviewer();
+      if (!me) {
+        toast('请先在「审阅分派」面板选择当前审阅人', true);
+        return;
+      }
+      btn.disabled = true;
+      try {
+        await api('POST', `/api/fragments/${btn.dataset.id}/claim`, {
+          reviewer_id: me.id,
+          expected_version: 0,
+        });
+        toast(`认领成功：该片段由「${me.name}」负责`);
+      } finally {
+        // 无论成功与否都刷新：认领冲突时可看到服务端返回的当前负责人
+        await renderComparison(cmp.id);
+      }
+    } else if (action === 'complete-assign') {
+      const me = currentReviewer();
+      btn.disabled = true;
+      try {
+        await api('POST', `/api/assignments/${btn.dataset.id}/complete`, {
+          expected_version: Number(btn.dataset.version),
+          completed_by: me ? me.name : null,
+        });
+        toast('该分派已标记完成');
+      } finally {
+        await renderComparison(cmp.id);
+      }
+    } else if (action === 'reclaim-assign') {
+      const leadInput = document.getElementById('lead-name');
+      const lead = leadInput ? leadInput.value.trim() : '';
+      if (!lead) {
+        toast('请先在「审阅分派」面板填写负责人姓名（回收操作人）', true);
+        leadInput?.focus();
+        return;
+      }
+      if (!confirm('确定回收该未完成分派？回收后片段回到「未分派」，可再分派给他人。')) return;
+      btn.disabled = true;
+      try {
+        await api('POST', `/api/assignments/${btn.dataset.id}/reclaim`, {
+          expected_version: Number(btn.dataset.version),
+          operator: lead,
+        });
+        lastLead.set(lead);
+        toast('分派已回收，片段回到「未分派」');
+      } finally {
+        await renderComparison(cmp.id);
+      }
     }
   } catch (err) {
     toast(err.message, true);
@@ -851,9 +1121,33 @@ document.addEventListener('change', async (e) => {
     } else if (t.id === 'filter-author') {
       cmp.author = t.value;
       drawComparison();
+    } else if (t.id === 'filter-assignee') {
+      cmp.assignee = t.value;
+      drawComparison();
     } else if (t.id === 'filter-annotated') {
       cmp.onlyAnnotated = t.checked;
       drawComparison();
+    } else if (t.id === 'me-reviewer') {
+      const hit = cmp.data.assignments.reviewers.find(
+        (p) => String(p.reviewer.id) === t.value
+      );
+      lastReviewer.set(hit ? hit.reviewer.name : '');
+      drawComparison();
+    } else if (t.id === 'lead-name') {
+      lastLead.set(t.value.trim());
+    } else if (t.classList.contains('assign-check')) {
+      const fid = Number(t.dataset.id);
+      if (t.checked) cmp.assignPick.add(fid);
+      else cmp.assignPick.delete(fid);
+      // 只更新批量分派按钮的计数，避免整页重绘导致滚动位置丢失
+      const n = cmp.assignPick.size;
+      const batchBtn = document.querySelector('[data-action="assign-batch"]');
+      if (batchBtn) {
+        batchBtn.textContent = `分派所选（${n}）`;
+        batchBtn.disabled = n === 0;
+      }
+      const clearBtn = document.querySelector('[data-action="clear-pick"]');
+      if (clearBtn) clearBtn.disabled = n === 0;
     }
   } catch (err) {
     toast(err.message, true);

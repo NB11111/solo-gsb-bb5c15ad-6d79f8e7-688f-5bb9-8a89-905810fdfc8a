@@ -1,4 +1,5 @@
 import type { ComparisonDetail } from './service';
+import type { AssignmentView } from './assignment';
 
 const TYPE_LABEL: Record<string, string> = { added: '新增', removed: '删除', changed: '修改' };
 const STATUS_LABEL: Record<string, string> = {
@@ -11,6 +12,10 @@ const DECISION_LABEL: Record<string, string> = {
   rejected: '拒绝变更',
   deferred: '暂缓',
 };
+const ASSIGNMENT_LABEL: Record<string, string> = {
+  assigned: '已分派',
+  completed: '已完成',
+};
 
 export function typeLabel(t: string): string {
   return TYPE_LABEL[t] ?? t;
@@ -22,6 +27,12 @@ export function statusLabel(s: string): string {
 
 export function decisionLabel(d: string | null | undefined): string {
   return d == null ? '' : DECISION_LABEL[d] ?? d;
+}
+
+/** 片段分派状态展示：未分派 / 已分派·某某 / 已完成·某某 */
+export function assignmentLabel(a: AssignmentView | null | undefined): string {
+  if (!a) return '未分派';
+  return `${ASSIGNMENT_LABEL[a.status] ?? a.status} · ${a.reviewer_name}`;
 }
 
 function csvCell(v: unknown): string {
@@ -113,7 +124,7 @@ export function toCsv(detail: ComparisonDetail): string {
 
 /** 导出 Markdown 审阅报告 */
 export function toMarkdown(detail: ComparisonDetail): string {
-  const { comparison, fragments, unanchored, stats } = detail;
+  const { comparison, fragments, unanchored, stats, assignments } = detail;
   const lines: string[] = [];
   lines.push(`# 审阅报告：${comparison.project_name}`);
   lines.push('');
@@ -135,8 +146,26 @@ export function toMarkdown(detail: ComparisonDetail): string {
   lines.push(
     `- 批注统计：待处理 ${stats.annotations.open} · 已解决 ${stats.annotations.resolved} · 待复核 ${stats.annotations.pending_review}（共 ${stats.annotations.total} 条）`
   );
+  lines.push(
+    `- 审阅分派：未分派 ${assignments.summary.unassigned} · 已分派 ${assignments.summary.assigned} · 已完成 ${assignments.summary.completed}（共 ${assignments.summary.fragments} 个片段，审阅人 ${assignments.reviewers.length} 名）`
+  );
   lines.push('');
   lines.push('---');
+
+  lines.push('');
+  lines.push('## 审阅分派汇总');
+  lines.push('');
+  if (assignments.reviewers.length === 0) {
+    lines.push('本轮比对尚未登记审阅人名单。');
+  } else {
+    lines.push('| 审阅人 | 分派片段 | 已完成 | 进行中 | 完成率 |');
+    lines.push('| ------ | -------- | ------ | ------ | ------ |');
+    for (const p of assignments.reviewers) {
+      const rate = p.total > 0 ? `${Math.round((p.completed / p.total) * 100)}%` : '—';
+      lines.push(`| ${p.reviewer.name} | ${p.total} | ${p.completed} | ${p.assigned} | ${rate} |`);
+    }
+  }
+  lines.push('');
 
   const renderAnnotation = (a: {
     author: string;
@@ -175,6 +204,8 @@ export function toMarkdown(detail: ComparisonDetail): string {
   for (const f of fragments) {
     lines.push('');
     lines.push(`## 片段 #${f.ord}（${typeLabel(f.type)}）`);
+    lines.push('');
+    lines.push(`**分派：** ${assignmentLabel(f.assignment)}`);
     lines.push('');
     if (f.old_text != null) {
       lines.push('**旧文本**');

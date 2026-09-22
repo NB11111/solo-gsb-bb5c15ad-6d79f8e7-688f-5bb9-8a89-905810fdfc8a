@@ -1,6 +1,12 @@
 import type { DB } from './db';
 import { splitParagraphs, buildFragments, similarity } from './diff';
 import { migrateAnnotations, type MigrationResult } from './migrate';
+import {
+  getAssignmentBoard,
+  getAssignmentMap,
+  type AssignmentBoard,
+  type AssignmentView,
+} from './assignment';
 
 export function createProject(db: DB, name: string): number {
   const info = db.prepare('INSERT INTO projects (name) VALUES (?)').run(name);
@@ -756,9 +762,11 @@ export interface ComparisonDetail {
     sealed_at: string | null;
     created_at: string;
   };
-  fragments: Array<FragmentRow & { annotations: AnnotationRow[] }>;
+  fragments: Array<FragmentRow & { annotations: AnnotationRow[]; assignment: AssignmentView | null }>;
   /** 无法锚定到任何片段的批注（待复核） */
   unanchored: AnnotationRow[];
+  /** 审阅分派：名单、各片段分派与每人完成进度 */
+  assignments: AssignmentBoard;
   stats: {
     added: number;
     removed: number;
@@ -825,10 +833,18 @@ export function getComparisonDetail(db: DB, comparisonId: number): ComparisonDet
   }
   for (const a of annotations) stats.annotations[a.status]++;
 
+  const assignmentMap = getAssignmentMap(db, comparisonId);
+  const assignments = getAssignmentBoard(db, comparisonId)!;
+
   return {
     comparison,
-    fragments: fragments.map((f) => ({ ...f, annotations: byFragment.get(f.id) ?? [] })),
+    fragments: fragments.map((f) => ({
+      ...f,
+      annotations: byFragment.get(f.id) ?? [],
+      assignment: assignmentMap.get(f.id) ?? null,
+    })),
     unanchored,
+    assignments,
     stats,
   };
 }

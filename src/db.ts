@@ -94,6 +94,35 @@ export function createSchema(db: DB): void {
     );
     CREATE INDEX IF NOT EXISTS idx_remount_logs_annotation ON remount_logs(annotation_id);
     CREATE INDEX IF NOT EXISTS idx_remount_logs_comparison ON remount_logs(comparison_id);
+
+    -- 审阅分派：比对级审阅人名单（同一比对内姓名唯一）
+    CREATE TABLE IF NOT EXISTS reviewers (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      comparison_id INTEGER NOT NULL REFERENCES comparisons(id) ON DELETE CASCADE,
+      name          TEXT NOT NULL,
+      created_by    TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+      UNIQUE (comparison_id, name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_reviewers_comparison ON reviewers(comparison_id);
+
+    -- 审阅分派：片段分派。一个片段同一时刻至多一条分派（UNIQUE(fragment_id)），
+    -- version 为乐观锁版本号：认领 / 完成 / 回收均按版本号原子校验，冲突不覆盖。
+    CREATE TABLE IF NOT EXISTS assignments (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      comparison_id INTEGER NOT NULL REFERENCES comparisons(id) ON DELETE CASCADE,
+      fragment_id   INTEGER NOT NULL REFERENCES fragments(id) ON DELETE CASCADE,
+      reviewer_id   INTEGER NOT NULL REFERENCES reviewers(id) ON DELETE CASCADE,
+      status        TEXT NOT NULL DEFAULT 'assigned' CHECK (status IN ('assigned', 'completed')),
+      version       INTEGER NOT NULL DEFAULT 1,
+      assigned_by   TEXT NOT NULL,
+      assigned_at   TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+      completed_by  TEXT,
+      completed_at  TEXT,
+      UNIQUE (fragment_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_assignments_comparison ON assignments(comparison_id);
+    CREATE INDEX IF NOT EXISTS idx_assignments_reviewer ON assignments(reviewer_id, status);
   `);
 }
 

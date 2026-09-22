@@ -1,6 +1,6 @@
 # 条文变更审阅台
 
-一个用于**规范 / 制度文本版本审阅**的网页应用：粘贴同一规范的前后版本，系统按段落自动计算差异（新增 / 删除 / 修改），审阅人员可在差异片段上创建带作者与状态的批注；当后续版本再次导入时，系统基于**文本锚点**把未解决的批注自动迁移到最相近的新片段，无法匹配的批注标记为「待复核」。迁移时服务端会**保存每条批注的候选片段及相似度**，比对详情页可打开**迁移复核报告**逐条查看自动选中依据；待复核批注可直接在详情页**选择候选片段重新挂载**，重挂在事务内完成并记录操作者与时间，已封存比对禁止修改。导入时可**自由选择比对基线**——默认取项目最新版本，也可指定项目内任一更早的历史版本；批注只允许从「以所选基线为新版」的最近一轮比对迁移，找不到则明确不迁移，绝不会从项目最新一轮比对误带批注。支持批注筛选、状态流转，每个差异片段必须作出「接受变更 / 拒绝变更 / 暂缓」结论（暂缓须填理由），全部片段有结论且批注全部关闭后可**审阅封存**，封存即锁定；全部片段有结论后即可一键**生成决议稿**（接受项采用新版、拒绝项恢复旧版、暂缓项保留新版并列入待办清单），支持 JSON / CSV / Markdown 审阅结果导出与 UTF-8 Markdown 决议稿下载。
+一个用于**规范 / 制度文本版本审阅**的网页应用：粘贴同一规范的前后版本，系统按段落自动计算差异（新增 / 删除 / 修改），审阅人员可在差异片段上创建带作者与状态的批注；当后续版本再次导入时，系统基于**文本锚点**把未解决的批注自动迁移到最相近的新片段，无法匹配的批注标记为「待复核」。迁移时服务端会**保存每条批注的候选片段及相似度**，比对详情页可打开**迁移复核报告**逐条查看自动选中依据；待复核批注可直接在详情页**选择候选片段重新挂载**，重挂在事务内完成并记录操作者与时间，已封存比对禁止修改。导入时可**自由选择比对基线**——默认取项目最新版本，也可指定项目内任一更早的历史版本；批注只允许从「以所选基线为新版」的最近一轮比对迁移，找不到则明确不迁移，绝不会从项目最新一轮比对误带批注。支持批注筛选、状态流转，每个差异片段必须作出「接受变更 / 拒绝变更 / 暂缓」结论（暂缓须填理由），全部片段有结论且批注全部关闭后可**审阅封存**，封存即锁定；全部片段有结论后即可一键**生成决议稿**（接受项采用新版、拒绝项恢复旧版、暂缓项保留新版并列入待办清单），支持 JSON / CSV / Markdown 审阅结果导出与 UTF-8 Markdown 决议稿下载。项目负责人还可为本轮比对**登记审阅人名单并按片段批量分派**：片段具有「未分派 / 已分派 / 已完成」状态，审阅人认领时服务端按**版本号原子校验**、冲突返回当前负责人而不覆盖，负责人可回收未完成分派再转交；详情页支持按审阅人筛选并实时显示各人完成进度，JSON / Markdown 导出附分派汇总。
 
 ## 技术栈
 
@@ -71,7 +71,7 @@ docker compose down -v
 ```bash
 npm install        # 安装依赖（better-sqlite3 为原生模块，需编译环境）
 npm run dev        # 编译并启动，默认 http://localhost:3000
-npm test           # 编译并运行单元测试（差异引擎 + 基线选择/校验 + 批注迁移 + 迁移复核/重挂 + 封存 + 决议稿）
+npm test           # 编译并运行单元测试（差异引擎 + 基线选择/校验 + 批注迁移 + 迁移复核/重挂 + 封存 + 决议稿 + 审阅分派）
 npm start          # 仅启动（需先 npm run build）
 ```
 
@@ -97,7 +97,20 @@ npm start          # 仅启动（需先 npm run build）
 8. **导入后续版本**：默认链路上，未解决批注按文本锚点自动迁移到最相近的新片段；无法匹配的进入页面顶部「待复核」区域。已封存的历史比对保持锁定，迁移复制出来的批注可在新一轮比对中继续处理。**选择非最新基线时**，批注只从「以该基线为新版」的最近一轮比对迁移（见下方《批注迁移规则》），不存在该比对时明确不迁移，不会从项目最新一轮误带。
 9. **迁移复核**：比对详情页点击「🧭 迁移复核报告」，逐条查看本轮迁移批注的候选片段、匹配侧（旧 / 新文本）与相似度，自动选中的片段高亮标注；「待复核」区的批注可点击「🔧 选择候选片段重新挂载」，从迁移时保存的候选列表中选定片段并填写操作者后确认——重挂在单个事务内完成，批注恢复为「待处理」并记录操作者与时间（批注卡片与报告均显示「🔄 重挂」标记），已封存比对禁止重挂。
 10. **筛选与导出**：按状态 / 作者筛选批注，一键导出 JSON / CSV / Markdown 审阅报告；导出内容包含每个片段的结论、暂缓理由、结论提出人 / 时间以及封存状态、封存人和封存时间。
-11. **基线关系展示**：项目页「版本记录」在每个版本下标注其导入时所选基线（首版标注「首版 · 仅存档」）；「比对记录」卡片显示双方版本序号（v1→v2），跨版本选基线时另以紫色提示「跨版本基线」及跳过的版本数。比对详情页顶部同样展示基线横幅（相邻 / 跨版本）。状态标识方面，每轮比对卡片标注「📝 草稿」或「🔒 已封存」（已封存卡片另显示封存人与封存时间）。
+11. **审阅分派**：比对详情页「👥 审阅分派」面板中，项目负责人登记本轮审阅人名单（多个姓名用逗号 / 顿号分隔批量登记），在未分派片段卡片上勾选「分派」后批量分派给指定审阅人；审阅人在「当前审阅人」中选择自己的身份后可**认领**未分派片段、对名下分派**标记完成**；负责人可**回收**未完成分派（片段回到未分派）再分派给他人。面板实时显示每名审阅人的完成进度（完成数 / 分派总数与进度条），筛选栏可按「审阅人」过滤片段。
+12. **基线关系展示**：项目页「版本记录」在每个版本下标注其导入时所选基线（首版标注「首版 · 仅存档」）；「比对记录」卡片显示双方版本序号（v1→v2），跨版本选基线时另以紫色提示「跨版本基线」及跳过的版本数。比对详情页顶部同样展示基线横幅（相邻 / 跨版本）。状态标识方面，每轮比对卡片标注「📝 草稿」或「🔒 已封存」（已封存卡片另显示封存人与封存时间）。
+
+## 审阅分派规则
+
+- **审阅人名单**：按比对隔离，同一比对内姓名唯一（请求内与已有姓名自动去重，空项忽略）；`POST /api/comparisons/:id/reviewers` 批量登记，`DELETE /api/reviewers/:id` 移除（名下仍有分派时返回 `409`）。
+- **片段分派状态**：由分派记录推导——无分派为「未分派」，分派中为「已分派」，审阅人标记后为「已完成」；一个片段同一时刻至多一条分派（`UNIQUE(fragment_id)`）。
+- **批量分派**：`POST /api/comparisons/:id/assignments`，请求体 `{assignments: [{fragment_id, reviewer_id}], assigned_by}`（分派人必填）。片段必须属于本比对、审阅人必须在本轮名单内，否则整体 `400` 且不写入；已分派的片段**不覆盖**，逐项在 `conflicts[]` 中返回当前负责人，其余片段照常分派成功。
+- **认领（版本号原子校验）**：`POST /api/fragments/:id/claim`，请求体 `{reviewer_id, expected_version}`；未分派片段的 `expected_version` 为 `0`。服务端在**单个事务**内先校验片段仍未分派再写入（`UNIQUE(fragment_id)` 兜底并发认领），冲突时返回 `409` 与**当前负责人**（`current`），绝不覆盖既有分派；客户端持有过期版本号同样返回 `409`。
+- **标记完成**：`POST /api/assignments/:id/complete`，请求体 `{expected_version, completed_by?}`；以 `UPDATE ... WHERE id AND version AND status='assigned'` 原子校验，版本过期或已完成时影响行数为 0，返回 `409` 与当前分派状态；成功后版本号 +1 并记录完成人与完成时间。
+- **回收与转交**：`POST /api/assignments/:id/reclaim`，请求体 `{expected_version, operator}`（操作人必填）；仅「未完成」（已分派）的分派可回收，已完成或版本不匹配返回 `409` 与当前状态。回收后片段回到「未分派」，可再次分派（转交）给他人。
+- **进度与筛选**：`GET /api/comparisons/:id/assignments` 返回名单（含每人 `assigned / completed / total` 进度）、全部片段分派与汇总统计；比对详情（`GET /api/comparisons/:id`）内嵌同样的 `assignments` 块，每个片段携带 `assignment`（含版本号），详情页可按审阅人筛选片段并显示各人完成进度。
+- **封存保护**：比对封存后，登记名单、移除审阅人、分派、认领、完成、回收一律返回 `409`；分派看板与导出为只读操作，不受影响。
+- **导出**：JSON 导出（`export?format=json`）自动包含 `assignments` 汇总与每片段分派；Markdown 导出（`export?format=md`）附「审阅分派汇总」表（每名审阅人的分派数、完成数、完成率）并在每个片段下标注分派状态。
 
 ## 决议稿生成规则
 
@@ -153,7 +166,7 @@ npm start          # 仅启动（需先 npm run build）
   - 不存在 `open`（未解决）或 `pending_review`（待复核）的批注（含未匹配到片段的待复核批注）。
 - 校验失败返回 `409 Conflict`，响应体 `blockers` 数组逐项给出 `kind`（`undecided_fragment` / `open_annotation` / `pending_review_annotation`）、片段序号或批注 ID 及中文说明；封存不会被部分写入。
 - 封存成功后写入封存人与封存时间，此后片段结论、批注的任何写操作（新增 / 编辑内容 / 改状态 / 删除 / 重新挂载）均返回 `409`；重复封存同样返回 `409`。
-- 升级提示：旧版本数据库首次启动时会自动为 `fragments` 增补 `decision / decision_reason / decided_by / decided_at`、为 `comparisons` 增补 `sealed_by / sealed_at`、为 `annotations` 增补 `remounted_by / remounted_at` 列，并自动创建 `migration_candidates`（迁移候选片段）与 `remount_logs`（重挂审计）表，历史数据视为草稿，无需手工迁移。
+- 升级提示：旧版本数据库首次启动时会自动为 `fragments` 增补 `decision / decision_reason / decided_by / decided_at`、为 `comparisons` 增补 `sealed_by / sealed_at`、为 `annotations` 增补 `remounted_by / remounted_at` 列，并自动创建 `migration_candidates`（迁移候选片段）、`remount_logs`（重挂审计）、`reviewers`（审阅人名单）与 `assignments`（片段分派）表，历史数据视为草稿，无需手工迁移。
 
 ## API 一览
 
@@ -163,8 +176,15 @@ npm start          # 仅启动（需先 npm run build）
 | GET / POST | `/api/projects` | 项目列表 / 新建项目 `{name}` |
 | GET / DELETE | `/api/projects/:id` | 项目详情（版本含其导入基线 `baseline_id/seq/label`，比对含 `old_seq/new_seq` 基线关系）/ 删除项目 |
 | POST | `/api/projects/:id/versions` | 导入版本 `{label, content, baseline_version_id?}`；默认取最新版本为基线，可指定本项目更早历史版本；同事务校验 + 生成差异 + 按基线迁移批注 |
-| GET | `/api/comparisons/:id` | 比对详情（片段 + 批注 + 结论 + 封存信息 + 统计；`comparison` 含 `old_seq/new_seq` 基线关系） |
+| GET | `/api/comparisons/:id` | 比对详情（片段 + 批注 + 结论 + 封存信息 + 分派看板 + 统计；`comparison` 含 `old_seq/new_seq` 基线关系） |
 | GET | `/api/comparisons/:id/annotations?status=&author=` | 批注筛选 |
+| GET | `/api/comparisons/:id/assignments` | 审阅分派总览：名单（含每人完成进度）、各片段分派与汇总统计 |
+| POST | `/api/comparisons/:id/reviewers` | 批量登记审阅人 `{names[], registered_by?}`（同名去重；已封存 `409`） |
+| DELETE | `/api/reviewers/:id` | 从名单移除审阅人（名下有分派 `409`；已封存 `409`） |
+| POST | `/api/comparisons/:id/assignments` | 负责人批量分派 `{assignments: [{fragment_id, reviewer_id}], assigned_by}`；已分派片段不覆盖，逐项在 `conflicts[]` 返回当前负责人 |
+| POST | `/api/fragments/:id/claim` | 审阅人认领 `{reviewer_id, expected_version}`；版本号原子校验，冲突 `409` 返回当前负责人而不覆盖 |
+| POST | `/api/assignments/:id/complete` | 标记分派完成 `{expected_version, completed_by?}`；版本过期 / 已完成 `409` 返回当前状态 |
+| POST | `/api/assignments/:id/reclaim` | 负责人回收未完成分派 `{expected_version, operator}`；已完成或版本冲突 `409` |
 | POST | `/api/fragments/:id/annotations` | 新建批注 `{author, content}`（已封存返回 `409`） |
 | PATCH / DELETE | `/api/annotations/:id` | 更新状态或内容 `{status?, content?}` / 删除（已封存返回 `409`） |
 | GET | `/api/comparisons/:id/migration-report` | 迁移复核报告：本轮迁移批注的候选片段及相似度、自动选中标记、重挂审计与汇总统计 |
@@ -174,12 +194,13 @@ npm start          # 仅启动（需先 npm run build）
 | GET | `/api/comparisons/:id/seal/blockers` | 封存前阻塞项预览（未结论片段 / 未解决 / 待复核批注） |
 | POST | `/api/comparisons/:id/seal` | 封存 `{sealed_by}`；服务端事务内再次校验，存在阻塞项返回 `409` 及 `blockers[]` |
 | GET | `/api/comparisons/:id/resolution?format=json\|md` | 生成决议稿（全部片段有结论后才可用，否则 `409` 及 `undecided[]`）；`md` 下载 UTF-8 Markdown |
-| GET | `/api/comparisons/:id/export?format=json\|csv\|md` | 导出审阅结果（含片段结论、暂缓理由、封存人 / 封存时间） |
+| GET | `/api/comparisons/:id/export?format=json\|csv\|md` | 导出审阅结果（含片段结论、暂缓理由、封存人 / 封存时间；JSON / Markdown 附分派汇总） |
 | POST | `/api/demo` | 载入示例数据 |
 
 批注状态：`open`（待处理）、`resolved`（已解决）、`pending_review`（待复核）。
 片段结论：`accepted`（接受变更）、`rejected`（拒绝变更）、`deferred`（暂缓，须附理由）。
 封存状态：比对记录上的 `sealed_at` 为空即**草稿**，非空即**已封存**（同时含 `sealed_by`）。
+片段分派状态：无分派记录即**未分派**；分派记录 `status` 为 `assigned`（已分派）/ `completed`（已完成），`version` 为乐观锁版本号。
 
 ## 目录结构
 
@@ -192,6 +213,7 @@ npm start          # 仅启动（需先 npm run build）
 │   ├── diff.ts          # 段落切分、相似度、LCS 差异引擎
 │   ├── migrate.ts       # 批注锚点迁移与候选片段计算
 │   ├── service.ts       # 版本导入 / 批注 / 比对组装 / 迁移复核报告与重挂
+│   ├── assignment.ts    # 审阅分派：名单登记 / 批量分派 / 认领 / 完成 / 回收（版本号原子校验）
 │   ├── resolution.ts    # 决议稿重建（段落序列 + 片段位置）与 Markdown 渲染
 │   ├── exporter.ts      # CSV / Markdown 导出
 │   ├── demo.ts          # 示例数据

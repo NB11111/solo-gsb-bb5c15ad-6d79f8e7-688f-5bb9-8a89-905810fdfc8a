@@ -454,6 +454,74 @@ textarea { width: 100%; resize: vertical; font-family: inherit; }
 }
 .remounted { color: #0e7490; font-size: 12px; }
 
+/* 审阅分派 */
+.assign-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  background: #fdfdff;
+}
+.assign-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.assign-head h3 { margin: 0; color: var(--text); font-size: 15px; }
+.assign-counts { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip.as-unassigned { background: #f1f5f9; color: var(--dim); }
+.chip.as-assigned { background: #eff6ff; color: #1d4ed8; }
+.chip.as-completed { background: var(--resolved-bg); color: var(--resolved-fg); }
+.badge.as-unassigned { background: #f1f5f9; color: var(--dim); }
+.badge.as-assigned { background: #eff6ff; color: #1d4ed8; }
+.badge.as-completed { background: var(--resolved-bg); color: var(--resolved-fg); }
+
+.reviewer-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 4px; }
+.reviewer-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: #fff;
+  font-size: 13px;
+}
+.reviewer-name { font-weight: 600; min-width: 72px; }
+.progress {
+  flex: 1;
+  max-width: 220px;
+  height: 8px;
+  border-radius: 4px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+.progress-fill { display: block; height: 100%; background: var(--resolved-fg); }
+
+.assign-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  font-size: 14px;
+}
+.assign-row label { display: flex; align-items: center; gap: 6px; color: var(--dim); }
+.assign-row input[name="names"] { flex: 1; min-width: 260px; }
+
+.assign-ops { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.assign-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: pointer;
+}
+.assign-pick input { margin: 0; }
+
 .remount-panel {
   border: 1px solid #a5b4fc;
   background: #eef2ff;

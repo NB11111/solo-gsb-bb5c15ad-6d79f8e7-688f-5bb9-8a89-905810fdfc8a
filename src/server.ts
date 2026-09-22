@@ -18,6 +18,15 @@ import {
   FRAGMENT_DECISIONS,
   type FragmentDecision,
 } from './service';
+import {
+  getAssignmentBoard,
+  registerReviewers,
+  removeReviewer,
+  assignFragments,
+  claimFragment,
+  completeAssignment,
+  reclaimAssignment,
+} from './assignment';
 import { toCsv, toMarkdown } from './exporter';
 import { buildResolution, resolutionToMarkdown } from './resolution';
 import { seedDemo } from './demo';
@@ -299,6 +308,136 @@ app.post('/api/annotations/:id/remount', (req, res) => {
     return badRequest(res, '候选片段不存在或不属于该比对');
   }
   res.json({ annotation: result.annotation });
+});
+
+// ---------- 审阅分派 ----------
+/** 分派总览：审阅人名单（含每人完成进度）、各片段分派与汇总统计 */
+app.get('/api/comparisons/:id/assignments', (req, res) => {
+  const board = getAssignmentBoard(db, Number(req.params.id));
+  if (!board) return notFound(res, '比对不存在');
+  res.json(board);
+});
+
+/** 登记审阅人名单（批量）：{names: string[], registered_by?}，同名自动去重 */
+app.post('/api/comparisons/:id/reviewers', (req, res) => {
+  const raw = req.body?.names;
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 100) {
+    return badRequest(res, '审阅人名单不能为空且不超过 100 人');
+  }
+  const registeredBy =
+    req.body?.registered_by != null ? String(req.body.registered_by).trim().slice(0, 50) : null;
+  const result = registerReviewers(db, Number(req.params.id), raw.map(String), registeredBy);
+  if (result.status === 'not_found') return notFound(res, '比对不存在');
+  if (result.status === 'sealed') return conflict(res, '该比对已封存，禁止登记审阅人');
+  if (result.status === 'invalid') {
+    return badRequest(res, '审阅人姓名不能为空且不超过 50 字');
+  }
+  res.status(201).json({ added: result.added, existing: result.existing });
+});
+
+/** 从名单移除审阅人；仍存在分派时返回 409 */
+app.delete('/api/reviewers/:id', (req, res) => {
+  const result = removeReviewer(db, Number(req.params.id));
+  if (result.status === 'not_found') return notFound(res, '审阅人不存在');
+  if (result.status === 'sealed') return conflict(res, '该比对已封存，禁止调整审阅人名单');
+  if (result.status === 'has_assignments') {
+    return conflict(res, '该审阅人名下仍有分派，请先回收或转交后再移除');
+  }
+  res.status(204).end();
+});
+
+/** 负责人按片段批量分派：{assignments: [{fragment_id, reviewer_id}], assigned_by}；
+ *  已分派的片段不覆盖，逐项在 conflicts 中返回当前负责人 */
+app.post('/api/comparisons/:id/assignments', (req, res) => {
+  const assignedBy = String(req.body?.assigned_by ?? '').trim();
+  if (!assignedBy) return badRequest(res, '分派人（负责人）必填');
+  if (assignedBy.length > 50) return badRequest(res, '分派人姓名过长（最多 50 字）');
+  const items = req.body?.assignments;
+  if (!Array.isArray(items)) return badRequest(res, 'assignments 必须为数组');
+  const result = assignFragments(db, Number(req.params.id), items, assignedBy);
+  if (result.status === 'not_found') return notFound(res, '比对不存在');
+  if (result.status === 'sealed') return conflict(res, '该比对已封存，禁止分派');
+  if (result.status === 'invalid') return badRequest(res, result.message);
+  res.status(201).json({ assigned: result.assigned, conflicts: result.conflicts });
+});
+
+/** 审阅人认领未分派片段：{reviewer_id, expected_version}；
+ *  版本号原子校验（未分派时 expected_version = 0），冲突返回 409 与当前负责人，不覆盖 */
+app.post('/api/fragments/:id/claim', (req, res) => {
+  const reviewerId = Number(req.body?.reviewer_id);
+  if (!Number.isInteger(reviewerId) || reviewerId <= 0) {
+    return badRequest(res, '认领人必须为本轮比对名单内的审阅人');
+  }
+  const expectedVersion = Number(req.body?.expected_version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 0) {
+    return badRequest(res, 'expected_version 必须为非负整数（未分派片段为 0）');
+  }
+  const result = claimFragment(db, Number(req.params.id), reviewerId, expectedVersion);
+  if (result.status === 'not_found') return notFound(res, '片段不存在');
+  if (result.status === 'sealed') return conflict(res, '该比对已封存，禁止认领');
+  if (result.status === 'reviewer_mismatch') {
+    return badRequest(res, '认领人必须为本轮比对名单内的审阅人');
+  }
+  if (result.status === 'version_mismatch') {
+    return conflict(res, '分派状态已变化，请刷新后重试', { current: result.current });
+  }
+  if (result.status === 'conflict') {
+    return conflict(
+      res,
+      `该片段已由「${result.current.reviewer_name}」负责，未覆盖`,
+      { current: result.current }
+    );
+  }
+  res.status(201).json({ assignment: result.assignment });
+});
+
+/** 标记分派完成：{expected_version, completed_by?}；版本冲突返回 409 与当前状态 */
+app.post('/api/assignments/:id/complete', (req, res) => {
+  const expectedVersion = Number(req.body?.expected_version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion <= 0) {
+    return badRequest(res, 'expected_version 必须为正整数');
+  }
+  const completedBy =
+    req.body?.completed_by != null ? String(req.body.completed_by).trim().slice(0, 50) : null;
+  const result = completeAssignment(db, Number(req.params.id), expectedVersion, completedBy);
+  if (result.status === 'not_found') return notFound(res, '分派不存在');
+  if (result.status === 'sealed') return conflict(res, '该比对已封存，禁止变更分派状态');
+  if (result.status === 'conflict') {
+    const cur = result.current;
+    return conflict(
+      res,
+      cur.status === 'completed'
+        ? `该分派已由「${cur.completed_by || cur.reviewer_name}」标记完成，未覆盖`
+        : '分派状态已变化，请刷新后重试',
+      { current: cur }
+    );
+  }
+  res.json({ assignment: result.assignment });
+});
+
+/** 负责人回收未完成分派：{expected_version, operator}；已完成或版本冲突返回 409 */
+app.post('/api/assignments/:id/reclaim', (req, res) => {
+  const operator = String(req.body?.operator ?? '').trim();
+  if (!operator) return badRequest(res, '操作人（负责人）必填');
+  if (operator.length > 50) return badRequest(res, '操作人姓名过长（最多 50 字）');
+  const expectedVersion = Number(req.body?.expected_version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion <= 0) {
+    return badRequest(res, 'expected_version 必须为正整数');
+  }
+  const result = reclaimAssignment(db, Number(req.params.id), expectedVersion);
+  if (result.status === 'not_found') return notFound(res, '分派不存在');
+  if (result.status === 'sealed') return conflict(res, '该比对已封存，禁止回收分派');
+  if (result.status === 'conflict') {
+    const cur = result.current;
+    return conflict(
+      res,
+      cur.status === 'completed'
+        ? '该分派已完成，不能回收'
+        : '分派状态已变化，请刷新后重试',
+      { current: cur }
+    );
+  }
+  res.json({ reclaimed: result });
 });
 
 // ---------- 导出 ----------
