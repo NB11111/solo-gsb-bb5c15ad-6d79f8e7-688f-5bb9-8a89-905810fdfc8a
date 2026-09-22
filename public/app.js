@@ -57,6 +57,29 @@ const lastSealer = {
   set: (v) => localStorage.setItem('review-sealer', v),
 };
 
+const lastLead = {
+  get: () => localStorage.getItem('review-lead') || '',
+  set: (v) => localStorage.setItem('review-lead', v),
+};
+
+/** 当前审阅人身份（id/姓名），按比对分别记忆；未选择时为 null */
+const currentReviewer = {
+  key: (comparisonId) => `review-current-reviewer-${comparisonId}`,
+  get(comparisonId) {
+    try {
+      return JSON.parse(localStorage.getItem(this.key(comparisonId)) || 'null');
+    } catch {
+      return null;
+    }
+  },
+  set(comparisonId, v) {
+    localStorage.setItem(this.key(comparisonId), JSON.stringify(v));
+  },
+  clear(comparisonId) {
+    localStorage.removeItem(this.key(comparisonId));
+  },
+};
+
 /* ================= 视图：项目列表 ================= */
 
 async function renderProjects() {
@@ -150,6 +173,8 @@ async function renderProject(id) {
 
 /* ================= 视图：比对详情 ================= */
 
+const ASSIGNMENT_LABEL = { unassigned: '未分派', assigned: '已分派', completed: '已完成' };
+
 const cmp = {
   id: null,
   data: null,
@@ -161,6 +186,9 @@ const cmp = {
   migrationReport: null,
   remountFor: null,
   remountCandidates: {},
+  // 比对级审阅分派
+  assigneeFilter: 'all',        // all / unassigned / assigned / completed / reviewer:<id>
+  selectedFragments: new Set(), // 负责人批量勾选的片段 id
 };
 
 async function renderComparison(id) {
@@ -173,6 +201,8 @@ async function renderComparison(id) {
     cmp.migrationReport = null;
     cmp.remountFor = null;
     cmp.remountCandidates = {};
+    cmp.assigneeFilter = 'all';
+    cmp.selectedFragments = new Set();
   }
   cmp.id = id;
   cmp.data = data;
@@ -287,6 +317,7 @@ function fragHtml(f) {
       </div>
       ${f.old_text != null ? `<pre class="frag-text old">${esc(f.old_text)}</pre>` : ''}
       ${f.new_text != null ? `<pre class="frag-text new">${esc(f.new_text)}</pre>` : ''}
+      ${fragmentAssignmentHtml(f)}
       ${decisionHtml(f)}
       <div class="anns">${anns.map(annHtml).join('')}</div>
       ${sealed ? '' : `
@@ -340,6 +371,179 @@ function sealPanelHtml(data) {
           ${canSeal ? '确认封存' : '尚有阻塞项，无法封存'}
         </button>
       </div>
+    </div>`;
+}
+
+/* ================= 比对级审阅分派 ================= */
+
+function currentReviewerObj() {
+  return currentReviewer.get(cmp.id);
+}
+
+/** 分派面板：名单管理 + 各人完成进度 + 当前身份切换 */
+function assignmentPanelHtml() {
+  const { assignment, comparison } = cmp.data;
+  const sealed = !!comparison.sealed_at;
+  const s = assignment.summary;
+  const total = s.total_fragments || 1;
+  const me = currentReviewerObj();
+
+  const reviewerRows = assignment.reviewers.map((r) => {
+    const pct = r.total_count === 0 ? 0 : Math.round((r.completed_count / r.total_count) * 100);
+    const mine = me && me.id === r.id;
+    return `
+      <tr${mine ? ' class="auto-chosen"' : ''}>
+        <td>
+          <b>${esc(r.name)}</b>${mine ? ' <span class="dim">（当前身份）</span>' : ''}
+        </td>
+        <td>${r.assigned_count}</td>
+        <td>${r.completed_count}</td>
+        <td>${r.total_count}</td>
+        <td class="prog-cell">
+          <span class="sim-bar"><span class="sim-fill" style="width:${pct}%"></span></span>${pct}%
+        </td>
+        <td>
+          ${sealed ? '' : `<button class="btn small danger" data-action="remove-reviewer" data-id="${r.id}">移除</button>`}
+        </td>
+      </tr>`;
+  }).join('');
+
+  const meOptions = assignment.reviewers.map((r) =>
+    `<option value="${r.id}" ${me && me.id === r.id ? 'selected' : ''}>${esc(r.name)}</option>`).join('');
+
+  return `
+    <div class="assignment-panel">
+      <div class="res-head">
+        <h3>👥 审阅分派 <span class="dim">负责人登记审阅人名单并按片段批量分派</span></h3>
+        <div class="identity-pick">
+          <span class="dim">我的审阅人身份：</span>
+          <select id="current-reviewer" title="选择身份后可认领未分派片段、更新完成状态">
+            <option value="">未选择（负责人视角）</option>
+            ${meOptions}
+          </select>
+        </div>
+      </div>
+
+      <div class="stats">
+        <span class="chip assign-unassigned${s.unassigned > 0 ? ' hot' : ''}">未分派 ${s.unassigned}</span>
+        <span class="chip assign-assigned${s.assigned > 0 ? ' hot' : ''}">已分派 ${s.assigned}</span>
+        <span class="chip assign-completed">已完成 ${s.completed}</span>
+        <span class="chip">总进度 ${s.completed}/${s.total_fragments}（${Math.round((s.completed / total) * 100)}%）</span>
+      </div>
+
+      ${sealed ? '' : `
+      <form id="add-reviewer-form" class="inline-form">
+        <input name="name" required maxlength="50" placeholder="审阅人姓名，如：王法务" value="${esc(lastAuthor.get())}">
+        <button class="btn primary" type="submit">＋ 登记审阅人</button>
+      </form>`}
+
+      ${assignment.reviewers.length === 0
+        ? '<p class="empty">尚未登记审阅人。负责人先登记名单，随后可在各片段或勾选多个片段批量分派。</p>'
+        : `<table class="cand-table reviewer-table">
+            <thead><tr><th>审阅人</th><th>进行中</th><th>已完成</th><th>合计</th><th>完成进度</th><th>操作</th></tr></thead>
+            <tbody>${reviewerRows}</tbody>
+          </table>`}
+      <p class="hint">
+        状态说明：<b>未分派 → 已分派 → 已完成</b>。审阅人认领时服务端按版本号原子校验，冲突会返回当前负责人而不覆盖；
+        负责人可回收未完成分派再转交，已完成片段不会被覆盖。
+      </p>
+    </div>`;
+}
+
+/** 片段上的分派条：状态徽标、负责人、认领 / 完成操作、负责人单片段分派 */
+function fragmentAssignmentHtml(f) {
+  const assignment = f;
+  const sealed = !!cmp.data.comparison.sealed_at;
+  const me = currentReviewerObj();
+  const reviewers = cmp.data.assignment.reviewers;
+
+  const badge =
+    assignment.assignment_status === 'unassigned'
+      ? '<span class="badge assign-unassigned">⬚ 未分派</span>'
+      : assignment.assignment_status === 'completed'
+        ? '<span class="badge assign-completed">✅ 已完成</span>'
+        : '<span class="badge assign-assigned">▷ 已分派</span>';
+
+  const who = assignment.assignee_name
+    ? `<b>${esc(assignment.assignee_name)}</b>${assignment.claimed_at ? ` · 认领于 ${esc(assignment.claimed_at)}` : ''}`
+    : '<span class="dim">无</span>';
+  const completedMeta = assignment.assignment_status === 'completed'
+    ? `<span class="dim">完成人：${esc(assignment.completed_by || assignment.assignee_name || '')}${assignment.completed_at ? ` · ${esc(assignment.completed_at)}` : ''}</span>`
+    : '';
+
+  const checkbox = sealed
+    ? ''
+    : `<label class="frag-pick" title="负责人批量分派时勾选（已完成片段不可勾选）">
+         <input type="checkbox" class="frag-select" data-id="${f.id}"
+           ${assignment.assignment_status === 'completed' ? 'disabled' : ''}
+           ${cmp.selectedFragments.has(f.id) ? 'checked' : ''}>
+       </label>`;
+
+  let actions = '';
+  if (!sealed) {
+    if (me) {
+      if (assignment.assignment_status === 'unassigned') {
+        actions = `<button class="btn small primary" data-action="claim" data-id="${f.id}" data-version="${assignment.assign_version}">🙋 我认领</button>`;
+      } else if (assignment.assignee_id === me.id) {
+        if (assignment.assignment_status === 'assigned') {
+          // 负责人直接分派时尚未本人确认：可先确认认领（补登记时间），再标记完成
+          const ackBtn = assignment.claimed_at
+            ? ''
+            : `<button class="btn small" data-action="claim" data-id="${f.id}" data-version="${assignment.assign_version}">🙋 确认认领</button>`;
+          actions = `${ackBtn}<button class="btn small primary" data-action="complete" data-id="${f.id}" data-version="${assignment.assign_version}">✅ 标记完成</button>`;
+        } else {
+          actions = `<button class="btn small" data-action="reopen" data-id="${f.id}" data-version="${assignment.assign_version}">↩ 退回进行中</button>`;
+        }
+      } else {
+        actions = '<span class="dim">当前由其他审阅人负责</span>';
+      }
+    }
+    // 负责人视角（或任何已登记名单之外的操作）始终提供单片段分派入口
+    const opts = [
+      `<option value="">— ${assignment.assignment_status === 'unassigned' ? '分派给…' : '转交 / 回收…'} —</option>`,
+      ...reviewers.map((r) =>
+        `<option value="${r.id}" ${assignment.assignee_id === r.id ? 'disabled' : ''}>分派给 ${esc(r.name)}</option>`),
+    ];
+    if (assignment.assignment_status !== 'unassigned') {
+      opts.push('<option value="__reclaim__">♻ 回收到未分派</option>');
+    }
+    actions += `
+      <select class="frag-assign" data-id="${f.id}" data-current="${assignment.assignee_id ?? ''}">${opts.join('')}</select>`;
+  }
+
+  return `
+    <div class="frag-assignment st-${assignment.assignment_status}">
+      ${checkbox}
+      ${badge}
+      <span class="dim">负责人：</span>${who}
+      ${completedMeta}
+      <span class="assign-actions">${actions}</span>
+    </div>`;
+}
+
+/** 负责人批量分派操作条 */
+function batchAssignBarHtml(fragments) {
+  const sealed = !!cmp.data.comparison.sealed_at;
+  if (sealed) return '';
+  const selectable = fragments.filter((f) => f.assignment_status !== 'completed');
+  const selectedIds = selectable
+    .map((f) => f.id)
+    .filter((id) => cmp.selectedFragments.has(id));
+  if (selectedIds.length === 0) return '';
+  const reviewerOpts = cmp.data.assignment.reviewers
+    .map((r) => `<option value="${r.id}">${esc(r.name)}</option>`)
+    .join('');
+  return `
+    <div class="batch-assign-bar">
+      <span>已选 <b>${selectedIds.length}</b> 个未完成片段：</span>
+      <select id="batch-reviewer">
+        <option value="">分派 / 转交给…</option>
+        ${reviewerOpts}
+        <option value="__reclaim__">♻ 回收为未分派</option>
+      </select>
+      <button class="btn small primary" data-action="batch-assign">应用到所选片段</button>
+      <button class="btn small" data-action="clear-selection">清除选择</button>
+      <span class="dim">已完成片段即使勾选也会被跳过</span>
     </div>`;
 }
 
@@ -521,6 +725,17 @@ function remountPanelHtml(a) {
     </div>`;
 }
 
+function fragmentMatchesAssigneeFilter(f) {
+  if (cmp.assigneeFilter === 'all') return true;
+  if (cmp.assigneeFilter === 'unassigned') return f.assignment_status === 'unassigned';
+  if (cmp.assigneeFilter === 'assigned') return f.assignment_status === 'assigned';
+  if (cmp.assigneeFilter === 'completed') return f.assignment_status === 'completed';
+  if (cmp.assigneeFilter.startsWith('reviewer:')) {
+    return f.assignee_id === Number(cmp.assigneeFilter.slice('reviewer:'.length));
+  }
+  return true;
+}
+
 function drawComparison() {
   const { comparison, fragments, unanchored, stats } = cmp.data;
   const authors = [...new Set(allAnnotations().map((a) => a.author))].sort();
@@ -528,6 +743,7 @@ function drawComparison() {
 
   const shownFragments = fragments.filter((f) => {
     if (filtering) return visibleAnnotations(f.annotations).length > 0;
+    if (!fragmentMatchesAssigneeFilter(f)) return false;
     if (cmp.onlyAnnotated) return f.annotations.length > 0;
     return true;
   });
@@ -588,19 +804,32 @@ function drawComparison() {
 
       ${migrationBarHtml()}
 
+      ${assignmentPanelHtml()}
+      ${batchAssignBarHtml(fragments)}
+
       <div class="filter-bar">
-        <label>状态
+        <label>批注状态
           <select id="filter-status">
             <option value="all">全部</option>
             ${Object.entries(STATUS_LABEL).map(([v, l]) =>
               `<option value="${v}" ${cmp.status === v ? 'selected' : ''}>${l}</option>`).join('')}
           </select>
         </label>
-        <label>作者
+        <label>批注作者
           <select id="filter-author">
             <option value="all">全部</option>
             ${authors.map((a) =>
               `<option value="${esc(a)}" ${cmp.author === a ? 'selected' : ''}>${esc(a)}</option>`).join('')}
+          </select>
+        </label>
+        <label>审阅分派
+          <select id="filter-assignee">
+            <option value="all" ${cmp.assigneeFilter === 'all' ? 'selected' : ''}>全部分派</option>
+            <option value="unassigned" ${cmp.assigneeFilter === 'unassigned' ? 'selected' : ''}>未分派</option>
+            <option value="assigned" ${cmp.assigneeFilter === 'assigned' ? 'selected' : ''}>已分派（进行中）</option>
+            <option value="completed" ${cmp.assigneeFilter === 'completed' ? 'selected' : ''}>已完成</option>
+            ${cmp.data.assignment.reviewers.map((r) =>
+              `<option value="reviewer:${r.id}" ${cmp.assigneeFilter === `reviewer:${r.id}` ? 'selected' : ''}>仅看 ${esc(r.name)}</option>`).join('')}
           </select>
         </label>
         <label class="check">
@@ -675,11 +904,32 @@ document.addEventListener('submit', async (e) => {
       await api('POST', `/api/fragments/${form.dataset.fragment}/annotations`, { author, content });
       await renderComparison(cmp.id);
       toast('批注已添加');
+    } else if (form.id === 'add-reviewer-form') {
+      e.preventDefault();
+      const name = form.elements.name.value.trim();
+      if (!name) {
+        toast('请填写审阅人姓名', true);
+        return;
+      }
+      await api('POST', `/api/comparisons/${cmp.id}/reviewers`, { name });
+      lastAuthor.set(name);
+      toast(`已登记审阅人：${name}`);
+      await renderComparison(cmp.id);
     }
   } catch (err) {
     toast(err.message, true);
   }
 });
+
+/** 调用认领 / 完成接口：409 冲突时刷新页面，展示服务端返回的当前负责人 */
+async function callAssignmentWithRefresh(fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    await renderComparison(cmp.id);
+    throw err;
+  }
+}
 
 document.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-action]');
@@ -794,6 +1044,97 @@ document.addEventListener('click', async (e) => {
       } finally {
         btn.disabled = false;
       }
+    } else if (action === 'remove-reviewer') {
+      const rid = Number(btn.dataset.id);
+      const reviewer = cmp.data.assignment.reviewers.find((r) => r.id === rid);
+      if (!confirm(`确定移除审阅人「${reviewer?.name ?? ''}」？其名下进行中的分派将被回收为未分派（已完成片段不可移除）。`)) return;
+      btn.disabled = true;
+      try {
+        const lead = lastLead.get() || '项目负责人';
+        await api('DELETE', `/api/comparisons/${cmp.id}/reviewers/${rid}?operator=${encodeURIComponent(lead)}`);
+        // 若移除的是当前身份，清除身份选择
+        const me = currentReviewerObj();
+        if (me && me.id === rid) currentReviewer.clear(cmp.id);
+        toast('审阅人已移除，其进行中的分派已回收');
+        await renderComparison(cmp.id);
+      } finally {
+        btn.disabled = false;
+      }
+    } else if (action === 'claim' || action === 'complete' || action === 'reopen') {
+      const me = currentReviewerObj();
+      if (!me) {
+        toast('请先在上方选择「我的审阅人身份」', true);
+        return;
+      }
+      const fragmentId = Number(btn.dataset.id);
+      const expectedVersion = Number(btn.dataset.version);
+      btn.disabled = true;
+      try {
+        if (action === 'claim') {
+          await callAssignmentWithRefresh(() =>
+            api('POST', `/api/fragments/${fragmentId}/claim`, {
+              reviewer_id: me.id,
+              expected_version: expectedVersion,
+            }));
+          toast(btn.textContent.includes('确认') ? '已确认认领' : `已认领片段，负责人：${me.name}`);
+        } else {
+          const completed = action === 'complete';
+          await callAssignmentWithRefresh(() =>
+            api('POST', `/api/fragments/${fragmentId}/assignment-status`, {
+              reviewer_id: me.id,
+              expected_version: expectedVersion,
+              completed,
+            }));
+          toast(completed ? '片段已标记完成' : '已退回进行中');
+        }
+        await renderComparison(cmp.id);
+      } finally {
+        btn.disabled = false;
+      }
+    } else if (action === 'batch-assign') {
+      const sel = document.getElementById('batch-reviewer');
+      if (!sel.value) {
+        toast('请选择要分派的审阅人或「回收为未分派」', true);
+        return;
+      }
+      const lead = lastLead.get();
+      const operator = lead || prompt('请填写负责人（操作人）姓名：', '项目负责人');
+      if (operator == null) return;
+      if (!operator.trim()) {
+        toast('负责人姓名必填', true);
+        return;
+      }
+      lastLead.set(operator.trim());
+
+      const selectable = cmp.data.fragments.filter(
+        (f) => f.assignment_status !== 'completed'
+      );
+      const items = selectable
+        .filter((f) => cmp.selectedFragments.has(f.id))
+        .map((f) => ({
+          fragment_id: f.id,
+          reviewer_id: sel.value === '__reclaim__' ? null : Number(sel.value),
+        }));
+      if (items.length === 0) {
+        toast('所选片段均已完成，无可分派项', true);
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const r = await api('POST', `/api/comparisons/${cmp.id}/assignments`, {
+          operator: operator.trim(),
+          items,
+        });
+        cmp.selectedFragments = new Set();
+        const skipped = r.skipped_completed?.length ?? 0;
+        toast(`分派完成：更新 ${r.updated.length} 个片段${skipped ? `，跳过已完成 ${skipped} 个` : ''}`);
+        await renderComparison(cmp.id);
+      } finally {
+        btn.disabled = false;
+      }
+    } else if (action === 'clear-selection') {
+      cmp.selectedFragments = new Set();
+      drawComparison();
     } else if (action === 'seal') {
       const input = document.getElementById('seal-by');
       const sealedBy = input.value.trim();
@@ -854,6 +1195,62 @@ document.addEventListener('change', async (e) => {
     } else if (t.id === 'filter-annotated') {
       cmp.onlyAnnotated = t.checked;
       drawComparison();
+    } else if (t.id === 'filter-assignee') {
+      cmp.assigneeFilter = t.value;
+      drawComparison();
+    } else if (t.id === 'current-reviewer') {
+      if (!t.value) {
+        currentReviewer.clear(cmp.id);
+        toast('已切换为负责人视角');
+      } else {
+        const reviewer = cmp.data.assignment.reviewers.find((r) => r.id === Number(t.value));
+        if (reviewer) {
+          currentReviewer.set(cmp.id, { id: reviewer.id, name: reviewer.name });
+          lastAuthor.set(reviewer.name);
+          toast(`当前审阅人身份：${reviewer.name}`);
+        }
+      }
+      drawComparison();
+    } else if (t.classList.contains('frag-select')) {
+      const id = Number(t.dataset.id);
+      if (t.checked) cmp.selectedFragments.add(id);
+      else cmp.selectedFragments.delete(id);
+      // 只更新批量操作条，避免重绘导致滚动跳动
+      const oldBar = document.querySelector('.batch-assign-bar');
+      const newBar = batchAssignBarHtml(cmp.data.fragments);
+      if (oldBar) oldBar.remove();
+      const panel = document.querySelector('.assignment-panel');
+      if (newBar && panel) panel.insertAdjacentHTML('afterend', newBar);
+    } else if (t.classList.contains('frag-assign')) {
+      if (!t.value) return;
+      const fragmentId = Number(t.dataset.id);
+      const lead = lastLead.get();
+      const operator = lead || prompt('请填写负责人（操作人）姓名：', '项目负责人');
+      if (operator == null) {
+        t.value = '';
+        return;
+      }
+      if (!operator.trim()) {
+        toast('负责人姓名必填', true);
+        t.value = '';
+        return;
+      }
+      lastLead.set(operator.trim());
+      const reviewerId = t.value === '__reclaim__' ? null : Number(t.value);
+      try {
+        const r = await api('POST', `/api/comparisons/${cmp.id}/assignments`, {
+          operator: operator.trim(),
+          items: [{ fragment_id: fragmentId, reviewer_id: reviewerId }],
+        });
+        const skipped = r.skipped_completed?.length ?? 0;
+        toast(skipped
+          ? '该片段已完成，分派被跳过'
+          : reviewerId == null ? '已回收为未分派' : '分派已更新');
+        await renderComparison(cmp.id);
+      } catch (err) {
+        t.value = '';
+        throw err;
+      }
     }
   } catch (err) {
     toast(err.message, true);

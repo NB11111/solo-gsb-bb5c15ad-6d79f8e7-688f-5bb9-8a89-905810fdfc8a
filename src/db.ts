@@ -94,6 +94,30 @@ export function createSchema(db: DB): void {
     );
     CREATE INDEX IF NOT EXISTS idx_remount_logs_annotation ON remount_logs(annotation_id);
     CREATE INDEX IF NOT EXISTS idx_remount_logs_comparison ON remount_logs(comparison_id);
+
+    -- 比对级审阅分派：项目负责人为本轮比对登记审阅人名单
+    CREATE TABLE IF NOT EXISTS reviewers (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      comparison_id INTEGER NOT NULL REFERENCES comparisons(id) ON DELETE CASCADE,
+      name          TEXT NOT NULL,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+      UNIQUE (comparison_id, name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_reviewers_comparison ON reviewers(comparison_id);
+
+    -- 片段分派审计：记录每次分派 / 回收 / 转交 / 认领 / 完成
+    CREATE TABLE IF NOT EXISTS assignment_logs (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      fragment_id   INTEGER NOT NULL REFERENCES fragments(id) ON DELETE CASCADE,
+      comparison_id INTEGER NOT NULL REFERENCES comparisons(id) ON DELETE CASCADE,
+      action        TEXT NOT NULL CHECK (action IN ('assign', 'reclaim', 'claim', 'complete', 'reopen')),
+      operator      TEXT NOT NULL,
+      from_reviewer_id   INTEGER REFERENCES reviewers(id) ON DELETE SET NULL,
+      to_reviewer_id     INTEGER REFERENCES reviewers(id) ON DELETE SET NULL,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_assignment_logs_fragment ON assignment_logs(fragment_id, id);
+    CREATE INDEX IF NOT EXISTS idx_assignment_logs_comparison ON assignment_logs(comparison_id);
   `);
 }
 
@@ -113,6 +137,23 @@ export function migrateSchema(db: DB): void {
   addColumnIfMissing('fragments', 'decided_at', 'decided_at TEXT');
   addColumnIfMissing('annotations', 'remounted_by', 'remounted_by TEXT');
   addColumnIfMissing('annotations', 'remounted_at', 'remounted_at TEXT');
+  // 比对级审阅分派：片段的分派状态、当前审阅人与乐观锁版本号
+  addColumnIfMissing(
+    'fragments',
+    'assignee_id',
+    'assignee_id INTEGER REFERENCES reviewers(id) ON DELETE SET NULL'
+  );
+  addColumnIfMissing(
+    'fragments',
+    'assignment_status',
+    "assignment_status TEXT NOT NULL DEFAULT 'unassigned'"
+  );
+  addColumnIfMissing('fragments', 'assign_version', 'assign_version INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing('fragments', 'assigned_by', 'assigned_by TEXT');
+  addColumnIfMissing('fragments', 'assigned_at', 'assigned_at TEXT');
+  addColumnIfMissing('fragments', 'claimed_at', 'claimed_at TEXT');
+  addColumnIfMissing('fragments', 'completed_by', 'completed_by TEXT');
+  addColumnIfMissing('fragments', 'completed_at', 'completed_at TEXT');
 }
 
 export function openDb(dbPath: string): DB {

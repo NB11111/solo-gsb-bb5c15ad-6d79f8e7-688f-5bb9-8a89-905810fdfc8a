@@ -1,6 +1,11 @@
 import type { DB } from './db';
 import { splitParagraphs, buildFragments, similarity } from './diff';
 import { migrateAnnotations, type MigrationResult } from './migrate';
+import {
+  getAssignmentOverview,
+  type AssignmentOverview,
+  type AssignmentStatus,
+} from './assignment';
 
 export function createProject(db: DB, name: string): number {
   const info = db.prepare('INSERT INTO projects (name) VALUES (?)').run(name);
@@ -739,6 +744,18 @@ export interface FragmentRow {
   decision_reason: string | null;
   decided_by: string | null;
   decided_at: string | null;
+  /** 审阅分派：unassigned / assigned / completed */
+  assignment_status: AssignmentStatus;
+  assignee_id: number | null;
+  /** 乐观锁版本号：认领 / 完成 / 回收均需携带 */
+  assign_version: number;
+  assigned_by: string | null;
+  assigned_at: string | null;
+  claimed_at: string | null;
+  completed_by: string | null;
+  completed_at: string | null;
+  /** 当前分派审阅人姓名（未分派为 null，联表 reviewers 得到） */
+  assignee_name: string | null;
 }
 
 export interface ComparisonDetail {
@@ -759,6 +776,8 @@ export interface ComparisonDetail {
   fragments: Array<FragmentRow & { annotations: AnnotationRow[] }>;
   /** 无法锚定到任何片段的批注（待复核） */
   unanchored: AnnotationRow[];
+  /** 比对级审阅分派：审阅人名单（含各人完成进度）、片段分派状态与汇总 */
+  assignment: AssignmentOverview;
   stats: {
     added: number;
     removed: number;
@@ -793,7 +812,13 @@ export function getComparisonDetail(db: DB, comparisonId: number): ComparisonDet
   if (!comparison) return null;
 
   const fragments = db
-    .prepare('SELECT * FROM fragments WHERE comparison_id = ? ORDER BY ord')
+    .prepare(
+      `SELECT f.*, rv.name AS assignee_name
+         FROM fragments f
+         LEFT JOIN reviewers rv ON rv.id = f.assignee_id
+        WHERE f.comparison_id = ?
+        ORDER BY f.ord`
+    )
     .all(comparisonId) as FragmentRow[];
   const annotations = db
     .prepare('SELECT * FROM annotations WHERE comparison_id = ? ORDER BY id')
@@ -829,6 +854,7 @@ export function getComparisonDetail(db: DB, comparisonId: number): ComparisonDet
     comparison,
     fragments: fragments.map((f) => ({ ...f, annotations: byFragment.get(f.id) ?? [] })),
     unanchored,
+    assignment: getAssignmentOverview(db, comparisonId)!,
     stats,
   };
 }

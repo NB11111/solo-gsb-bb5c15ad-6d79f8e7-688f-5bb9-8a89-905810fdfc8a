@@ -1,5 +1,6 @@
 import type { DB } from './db';
 import { createProject, importVersion, addAnnotation } from './service';
+import { addReviewer, batchAssign, claimFragment, setFragmentCompleted } from './assignment';
 
 const V1 = `第一条 为规范平台数据处理活动，保障数据安全，根据《中华人民共和国数据安全法》等法律法规，制定本办法。
 
@@ -93,10 +94,47 @@ export function seedDemo(db: DB): DemoResult {
     throw new Error('示例数据异常：v3 比对未生成');
   }
 
+  // 为本轮比对预置审阅分派：登记名单、分派片段，并演示认领 / 完成 / 待认领三种状态
+  seedAssignments(db, r3.comparisonId);
+
   return {
     projectId,
     projectName,
     comparisons: [r2.comparisonId, r3.comparisonId],
     migration: r3.migration,
   };
+}
+
+/** 示例分派：王法务 / 李合规 / 张审计三人按片段分派，部分已认领或完成 */
+function seedAssignments(db: DB, comparisonId: number): void {
+  const wang = addReviewer(db, comparisonId, '王法务');
+  const li = addReviewer(db, comparisonId, '李合规');
+  const zhang = addReviewer(db, comparisonId, '张审计');
+  if (wang.status !== 'ok' || li.status !== 'ok' || zhang.status !== 'ok') {
+    throw new Error('示例数据异常：审阅人名单登记失败');
+  }
+  const frags = db
+    .prepare('SELECT id, ord FROM fragments WHERE comparison_id = ? ORDER BY ord')
+    .all(comparisonId) as Array<{ id: number; ord: number }>;
+  if (frags.length === 0) return;
+
+  // 负责人把片段依次分派给三位审阅人
+  const roster = [wang.id, li.id, zhang.id] as const;
+  const items = frags.map((f, i) => ({ fragment_id: f.id, reviewer_id: roster[i % roster.length] }));
+  const assigned = batchAssign(db, comparisonId, '项目负责人', items);
+  if (assigned.status !== 'ok') throw new Error(`示例数据异常：分派失败（${assigned.status}）`);
+
+  // 第一个片段：王法务认领并完成
+  const first = frags[0];
+  const claim = claimFragment(db, first.id, wang.id, 1);
+  if (claim.status !== 'ok') throw new Error(`示例数据异常：认领失败（${claim.status}）`);
+  const done = setFragmentCompleted(db, first.id, wang.id, claim.assignment.assign_version, true);
+  if (done.status !== 'ok') throw new Error(`示例数据异常：完成失败（${done.status}）`);
+
+  // 第二个片段：李合规已认领、进行中
+  if (frags[1]) {
+    const c = claimFragment(db, frags[1].id, li.id, 1);
+    if (c.status !== 'ok') throw new Error(`示例数据异常：认领失败（${c.status}）`);
+  }
+  // 其余片段保持「已分派待处理」或由张审计持有，供前端演示筛选与转交
 }

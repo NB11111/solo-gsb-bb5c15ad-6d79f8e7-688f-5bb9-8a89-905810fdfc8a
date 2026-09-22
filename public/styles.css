@@ -547,6 +547,61 @@ textarea { width: 100%; resize: vertical; font-family: inherit; }
 .todo-item { margin: 8px 0; font-size: 14px; }
 .todo-reason { color: #c2410c; margin: 2px 0; }
 
+/* 比对级审阅分派 */
+.assignment-panel {
+  border: 1px solid #93c5fd;
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  background: #f8fbff;
+}
+.identity-pick { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.reviewer-table td, .reviewer-table th { white-space: nowrap; }
+.reviewer-table .prog-cell { min-width: 130px; }
+
+.chip.assign-unassigned { background: #f1f5f9; color: var(--dim); border-color: #cbd5e1; }
+.chip.assign-assigned { background: #eff6ff; color: #1d4ed8; border-color: #93c5fd; }
+.chip.assign-completed { background: var(--resolved-bg); color: var(--resolved-fg); border-color: var(--added-border); }
+.badge.assign-unassigned { background: #f1f5f9; color: var(--dim); }
+.badge.assign-assigned { background: #eff6ff; color: #1d4ed8; }
+.badge.assign-completed { background: var(--resolved-bg); color: var(--resolved-fg); }
+
+.frag-assignment {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #f8fafc;
+  font-size: 13px;
+}
+.frag-assignment.st-assigned { background: #f5f9ff; border-color: #bfdbfe; }
+.frag-assignment.st-completed { background: var(--added-bg); border-color: var(--added-border); }
+.frag-pick { display: inline-flex; align-items: center; }
+.frag-pick input { margin: 0; }
+.assign-actions { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.assign-actions select { padding: 4px 8px; font-size: 13px; }
+
+.batch-assign-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  position: sticky;
+  bottom: 10px;
+  z-index: 20;
+  padding: 10px 14px;
+  margin: -4px 0 14px;
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  background: #eff6ff;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.18);
+  font-size: 14px;
+}
+
 /* 提示条 */
 .toast {
   position: fixed;

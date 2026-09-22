@@ -21,6 +21,14 @@ import {
 import { toCsv, toMarkdown } from './exporter';
 import { buildResolution, resolutionToMarkdown } from './resolution';
 import { seedDemo } from './demo';
+import {
+  addReviewer,
+  removeReviewer,
+  batchAssign,
+  claimFragment,
+  setFragmentCompleted,
+  getAssignmentOverview,
+} from './assignment';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const DB_PATH = process.env.DB_PATH ?? path.join(process.cwd(), 'data', 'review.db');
@@ -301,6 +309,152 @@ app.post('/api/annotations/:id/remount', (req, res) => {
   res.json({ annotation: result.annotation });
 });
 
+// ---------- 比对级审阅分派 ----------
+const MAX_REVIEWER_NAME = 50;
+
+/** 校验姓名类字段：合法返回 {name}，否则返回中文错误信息 */
+function validateName(
+  raw: unknown,
+  field: string
+): { ok: true; name: string } | { ok: false; error: string } {
+  const name = String(raw ?? '').trim();
+  if (!name) return { ok: false, error: `${field}必填` };
+  if (name.length > MAX_REVIEWER_NAME) {
+    return { ok: false, error: `${field}过长（最多 50 字）` };
+  }
+  return { ok: true, name };
+}
+
+/** 分派总览：审阅人名单（含各人完成进度）、片段分派状态与汇总（详情接口已内嵌，亦可单独拉取） */
+app.get('/api/comparisons/:id/assignments', (req, res) => {
+  const overview = getAssignmentOverview(db, Number(req.params.id));
+  if (!overview) return notFound(res, '比对不存在');
+  res.json(overview);
+});
+
+/** 项目负责人登记审阅人名单 */
+app.post('/api/comparisons/:id/reviewers', (req, res) => {
+  const checked = validateName(req.body?.name, '审阅人姓名');
+  if (!checked.ok) return badRequest(res, checked.error);
+  const result = addReviewer(db, Number(req.params.id), checked.name);
+  if (result.status === 'not_found') return notFound(res, '比对不存在');
+  if (result.status === 'sealed') return conflict(res, '该比对已封存，禁止变更审阅人名单');
+  if (result.status === 'duplicate') return conflict(res, '该审阅人已在名单中');
+  res.status(201).json({ id: result.id, name: checked.name });
+});
+
+/** 从名单移除审阅人：进行中的分派先自动回收；名下有已完成片段时拒绝 */
+app.delete('/api/comparisons/:id/reviewers/:rid', (req, res) => {
+  // DELETE 通常无请求体：操作人缺省时以「项目负责人」署名
+  const checked = validateName(req.body?.operator ?? req.query.operator, '操作人');
+  const opName = checked.ok ? checked.name : '项目负责人';
+  const result = removeReviewer(
+    db,
+    Number(req.params.id),
+    Number(req.params.rid),
+    opName
+  );
+  if (result.status === 'not_found') return notFound(res, '比对或审阅人不存在');
+  if (result.status === 'sealed') return conflict(res, '该比对已封存，禁止变更审阅人名单');
+  if (result.status === 'has_completed') {
+    return conflict(res, '该审阅人名下存在已完成片段，不能移除；请先由其退回或保留在名单中');
+  }
+  res.status(204).end();
+});
+
+/** 负责人按片段批量分派 / 回收 / 转交 */
+app.post('/api/comparisons/:id/assignments', (req, res) => {
+  const comparisonId = Number(req.params.id);
+  const checked = validateName(req.body?.operator, '操作人');
+  if (!checked.ok) return badRequest(res, checked.error);
+  const operator = checked.name;
+
+  const rawItems = req.body?.items;
+  if (!Array.isArray(rawItems)) return badRequest(res, 'items 必须为片段分派数组');
+  const items: Array<{ fragment_id: number; reviewer_id: number | null }> = [];
+  for (const it of rawItems) {
+    const fragmentId = Number(it?.fragment_id);
+    if (!Number.isInteger(fragmentId) || fragmentId <= 0) {
+      return badRequest(res, '片段 id 不合法');
+    }
+    let reviewerId: number | null = null;
+    if (it.reviewer_id !== undefined && it.reviewer_id !== null) {
+      reviewerId = Number(it.reviewer_id);
+      if (!Number.isInteger(reviewerId) || reviewerId <= 0) {
+        return badRequest(res, '审阅人 id 不合法');
+      }
+    }
+    items.push({ fragment_id: fragmentId, reviewer_id: it.reviewer_id == null ? null : reviewerId });
+  }
+  if (items.length === 0) return badRequest(res, '至少选择一个片段');
+
+  const result = batchAssign(db, comparisonId, operator, items);
+  if (result.status === 'not_found') return notFound(res, '比对不存在');
+  if (result.status === 'sealed') return conflict(res, '该比对已封存，禁止变更分派');
+  if (result.status === 'fragment_mismatch') {
+    return badRequest(res, '片段不存在或不属于该比对');
+  }
+  if (result.status === 'reviewer_mismatch') {
+    return badRequest(res, '审阅人不存在或不属于该比对名单');
+  }
+  res.status(201).json(result);
+});
+
+/** 审阅人认领未分派片段：expected_version 原子校验，冲突返回当前负责人 */
+app.post('/api/fragments/:id/claim', (req, res) => {
+  const fragmentId = Number(req.params.id);
+  const reviewerId = Number(req.body?.reviewer_id);
+  if (!Number.isInteger(reviewerId) || reviewerId <= 0) {
+    return badRequest(res, '审阅人 id 不合法');
+  }
+  const expectedVersion = Number(req.body?.expected_version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 0) {
+    return badRequest(res, 'expected_version 必须为非负整数');
+  }
+  const result = claimFragment(db, fragmentId, reviewerId, expectedVersion);
+  if (result.status === 'not_found') return notFound(res, '片段不存在');
+  if (result.status === 'sealed') return conflict(res, '该比对已封存，禁止认领');
+  if (result.status === 'reviewer_mismatch') return badRequest(res, '审阅人不存在或不属于该比对名单');
+  if (result.status === 'completed') return conflict(res, '该片段已完成，无需认领');
+  if (result.status === 'conflict') {
+    const msg = result.current.assignee_name
+      ? `该片段已分派给审阅人「${result.current.assignee_name}」，认领不抢占；换人请由负责人回收或转交`
+      : '片段分派状态已变化，请刷新后重试';
+    return conflict(res, msg, { current: result.current });
+  }
+  res.status(201).json({ assignment: result.assignment });
+});
+
+/** 审阅人标记完成 / 退回进行中：expected_version 原子校验，冲突返回当前负责人 */
+app.post('/api/fragments/:id/assignment-status', (req, res) => {
+  const fragmentId = Number(req.params.id);
+  const reviewerId = Number(req.body?.reviewer_id);
+  if (!Number.isInteger(reviewerId) || reviewerId <= 0) {
+    return badRequest(res, '审阅人 id 不合法');
+  }
+  const expectedVersion = Number(req.body?.expected_version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 0) {
+    return badRequest(res, 'expected_version 必须为非负整数');
+  }
+  const completed = req.body?.completed !== false;
+  const result = setFragmentCompleted(db, fragmentId, reviewerId, expectedVersion, completed);
+  if (result.status === 'not_found') return notFound(res, '片段不存在');
+  if (result.status === 'sealed') {
+    return conflict(res, completed ? '该比对已封存，禁止标记完成' : '该比对已封存，禁止退回');
+  }
+  if (result.status === 'reviewer_mismatch') return badRequest(res, '审阅人不存在或不属于该比对名单');
+  if (result.status === 'not_assigned') {
+    return conflict(res, completed ? '片段尚未分派，不能标记完成' : '片段当前不是已完成状态');
+  }
+  if (result.status === 'forbidden_assignee') {
+    return conflict(res, '仅当前负责的审阅人可以更新完成状态');
+  }
+  if (result.status === 'conflict') {
+    return conflict(res, '片段分派状态已变化，请刷新后重试', { current: result.current });
+  }
+  res.json({ assignment: result.assignment });
+});
+
 // ---------- 导出 ----------
 app.get('/api/comparisons/:id/export', (req, res) => {
   const detail = getComparisonDetail(db, Number(req.params.id));
@@ -364,8 +518,14 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 // API 404 与统一错误处理
 app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在' }));
 app.use(
-  (err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  (err: Error & { status?: number; statusCode?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(err);
+    // body-parser 等中间件抛出的错误带 status / statusCode（如非法 JSON 的 400），按其状态码返回
+    const status = typeof err.status === 'number' ? err.status : err.statusCode;
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      res.status(status).json({ error: '请求内容不合法' });
+      return;
+    }
     res.status(500).json({ error: '服务器内部错误' });
   }
 );
